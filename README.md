@@ -1,4 +1,4 @@
-# weather_fields
+# Weather fields
 
 ## Using ODE/SDE based models to solve inverse problems of increasing resolution of weather fields
  
