@@ -1,0 +1,8 @@
+/data/*
+/checkpoints/*
+dev/*
+*__pycache__
+*.sdf
+.idea
+*.DS_Store
+.vscode/
