@@ -2,6 +2,7 @@
 from typing import Callable, Optional
 
 import torch
+import torch.functional as F
 from torch import nn
 from einops.layers.torch import Rearrange
 from utils import default
