@@ -1,5 +1,8 @@
 import os
-from typing import Tuple, Optional
+import argparse
+from tqdm import tqdm
+from tqdm.contrib.logging import logging_redirect_tqdm
+from typing import Tuple, Optional, Dict
 from datetime import datetime
 
 import torch
@@ -7,11 +10,14 @@ from torch.optim import Adam
 import torch.nn.functional as F
 from torch.utils.data import DataLoader
 
+
 from data_utils import WeatherFieldsDataset
 from schedule import linear_beta_schedule
 from unet import Unet
 
-torch.manual_seed(0)
+from logging import getLogger, basicConfig, INFO
+
+logger = getLogger(__name__)
 
 timesteps = 300
 
@@ -111,7 +117,50 @@ def p_spectral_losses(
 
     return loss
 
+def parse_arguments() -> Dict:
+    parser = argparse.ArgumentParser()
+
+    parser.add_argument(
+        '-b',
+        '--batch_size', 
+        dest='batch_size',
+        type=int,
+        default=256,
+    )
+
+    parser.add_argument(
+        '-e',
+        '--epochs', 
+        dest='epochs',
+        type=int,
+        default=10,
+    )
+
+    parser.add_argument(
+        '-n',
+        '--name', 
+        dest='name',
+        type=str,
+        default="10",
+    )
+
+    parser.add_argument(
+        '-s',
+        '--seed', 
+        dest='seed',
+        type=int,
+        default=0,
+    )
+
+    args = parser.parse_args()
+    return vars(args)
+
+
 if __name__ == "__main__":
+    basicConfig(level=INFO)
+    arguments = parse_arguments()
+    torch.manual_seed(arguments['seed'])
+
 
     dataset = WeatherFieldsDataset(
         root_dir=os.path.abspath(".."),
@@ -121,12 +170,14 @@ if __name__ == "__main__":
         )
     )
 
-    batch_size = 1
-    dataloader = DataLoader(dataset, batch_size=batch_size, shuffle=True)
-
+    batch_size = arguments['batch_size']
+    epochs = arguments['epochs']
     device = "cuda" if torch.cuda.is_available() else "cpu"
+
     image_size = 128
     channels = 3
+
+    dataloader = DataLoader(dataset, batch_size=batch_size, shuffle=True)
 
     hr_image, lr_image = dataset[0]
     C, H, W = hr_image.shape
@@ -141,41 +192,50 @@ if __name__ == "__main__":
 
     optimizer = Adam(model.parameters(), lr=1e-3)
 
-    epochs = 1
-    device = "cuda" if torch.cuda.is_available() else "cpu"
-    
     state = {
         "loss_train":[]
     }
+    loss_float = 0.
+    logger.info("Model and optimizer are defined. Starting the training. ")
+    
+    with logging_redirect_tqdm():
+        for epoch in range(epochs):
+            for step, (lr_batch, hr_batch) in tqdm(
+                    enumerate(dataloader), 
+                    desc=f"Loss: {loss_float}, Epoch: {epoch}",
+                    total=len(dataloader)
+                ):
+                optimizer.zero_grad()
 
-    for epoch in range(epochs):
-        for step, (lr_batch, hr_batch) in enumerate(dataloader):
-            optimizer.zero_grad()
+                batch_size, _, _, _ = lr_batch.shape
+                lr_batch = lr_batch.to(device)
+                hr_batch = hr_batch.to(device)
 
-            batch_size, _, _, _ = lr_batch.shape
-            lr_batch = lr_batch.to(device)
-            hr_batch = hr_batch.to(device)
+                t = torch.randint(0, timesteps, (batch_size,), device=device).long()
 
-            t = torch.randint(0, timesteps, (batch_size,), device=device).long()
+                loss = p_spectral_losses(
+                    denoise_model=model, 
+                    x_start=hr_batch, 
+                    t=t,
+                    self_condition=lr_batch,
+                )
+                loss.backward()
 
-            loss = p_spectral_losses(
-                denoise_model=model, 
-                x_start=hr_batch, 
-                t=t,
-                self_condition=lr_batch,
-            )
+                loss_float = float(loss.detach().cpu())
+                state['loss_train'].append(loss_float)
 
-            if step % 100 == 0:
-                print("Loss:", loss.item())
+                optimizer.step()
+                break
 
-            loss.backward()
-            state['loss_train'].append(float(loss.detach().cpu()))
-            optimizer.step()
-            
+    logger.info(f"Finished training. ")
+
     ### Save checkpoint
     now = datetime.now()
     now = now.strftime('%m_%d_%M_%S')
-    file_name = now + "_checkpoint.pkl"
+    if arguments['name'] != "":
+        file_name = now + "_checkpoint.pkl"
+    else:
+        file_name = arguments['name'] + now + "_checkpoint.pkl"
 
     pwd_path = os.path.abspath("..")
     folder_path = os.path.join(
@@ -188,6 +248,8 @@ if __name__ == "__main__":
         file_name
     )
 
+    logger.info(f"Saving the checkpoint at {file_path}. ")
+
     state["model_state_dict"] = model.state_dict()
     state["optimizer_state_dict"] = optimizer.state_dict()
     state["model_kwargs"] = {
@@ -199,6 +261,8 @@ if __name__ == "__main__":
     state["other"] = {
         "epochs":epochs,
         "batch_size":batch_size,
+        "device":device,
+        "seed":arguments["seed"],
     }
 
     torch.save(state, file_path)
