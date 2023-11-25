@@ -161,14 +161,14 @@ def parse_arguments() -> Dict:
     args = parser.parse_args()
     return vars(args)
 
-def train_diffusion(batch_size, epochs, name, seed):
+def train_diffusion(batch_size, epochs, seed):
     basicConfig(level=INFO)
     torch.manual_seed(seed)
     
     pwd_path = os.path.abspath("..")
     save_folder_path = os.path.join(
         pwd_path,
-        "experiment_informations"
+        "results"
     )
     
     if not os.path.exists(save_folder_path):
