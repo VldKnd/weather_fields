@@ -72,12 +72,15 @@ def p_spectral_losses(
         noise: Optional[torch.Tensor] = None,
         self_condition: Optional[torch.Tensor] = None
     ):
+    
+    batch_size, C, H, W = x_start.shape
+    
     if noise is None:
         noise = torch.randn_like(x_start)
 
     with torch.no_grad():
         domain_fourier_noise = torch.randn_like(x_start)
-        fourier_noise = torch.fft.rfft2(domain_fourier_noise)
+        fourier_noise = ((2**1/2) / H) * torch.fft.rfft2(domain_fourier_noise)
         
     x_noisy = q_sample(x_start=x_start, t=t, noise=noise)
     x_noisy_transformed = q_sample(x_start=x_start, t=t, noise=domain_fourier_noise)
@@ -112,7 +115,10 @@ def p_spectral_losses(
 
     loss = (
         F.mse_loss(noise, predicted_noise) +
-        complex_mse_loss(fourier_noise, torch.fft.rfft2(predicted_domain_fourier_noise))
+        complex_mse_loss(
+            fourier_noise,
+            ((2**1/2) / H) * torch.fft.rfft2(predicted_domain_fourier_noise)
+        )
     )
 
     return loss
@@ -155,32 +161,35 @@ def parse_arguments() -> Dict:
     args = parser.parse_args()
     return vars(args)
 
-
-if __name__ == "__main__":
+def train_diffusion(batch_size, epochs, name, seed):
     basicConfig(level=INFO)
-    arguments = parse_arguments()
-    torch.manual_seed(arguments['seed'])
-
+    torch.manual_seed(seed)
+    
+    pwd_path = os.path.abspath("..")
+    save_folder_path = os.path.join(
+        pwd_path,
+        "experiment_informations"
+    )
+    
+    if not os.path.exists(save_folder_path):
+        raise OSError(f"Folder for saving information {save_folder_path} does not exits. ")
 
     dataset = WeatherFieldsDataset(
-        root_dir=os.path.abspath(".."),
         path_to_folder=os.path.join(
-            "data",
+            "../data",
             "wrf_data",
+            "train",
         )
     )
 
-    batch_size = arguments['batch_size']
-    epochs = arguments['epochs']
+    batch_size = batch_size
+    epochs = epochs
     device = "cuda" if torch.cuda.is_available() else "cpu"
-
-    image_size = 128
-    channels = 3
 
     dataloader = DataLoader(dataset, batch_size=batch_size, shuffle=True)
 
-    hr_image, lr_image = dataset[0]
-    C, H, W = hr_image.shape
+    hr_image, _ = dataset[0]
+    C, H, _ = hr_image.shape
 
     model = Unet(
         dim=H,
@@ -195,12 +204,14 @@ if __name__ == "__main__":
     state = {
         "loss_train":[]
     }
+
     loss_float = 0.
-    logger.info("Model and optimizer are defined. Starting the training. ")
+    logger.info("Model and optimizer are defined.")
+    logger.info("Starting the training. ")
     
     with logging_redirect_tqdm():
         for epoch in range(epochs):
-            for step, (lr_batch, hr_batch) in tqdm(
+            for _, (lr_batch, hr_batch) in tqdm(
                     enumerate(dataloader), 
                     desc=f"Loss: {loss_float}, Epoch: {epoch}",
                     total=len(dataloader)
@@ -228,28 +239,7 @@ if __name__ == "__main__":
                 break
 
     logger.info(f"Finished training. ")
-
-    ### Save checkpoint
-    now = datetime.now()
-    now = now.strftime('%m_%d_%M_%S')
-    if arguments['name'] != "":
-        file_name = now + "_checkpoint.pkl"
-    else:
-        file_name = arguments['name'] + now + "_checkpoint.pkl"
-
-    pwd_path = os.path.abspath("..")
-    folder_path = os.path.join(
-        pwd_path,
-        "checkpoints"
-    )
-
-    file_path = os.path.join(
-        folder_path,
-        file_name
-    )
-
-    logger.info(f"Saving the checkpoint at {file_path}. ")
-
+    
     state["model_state_dict"] = model.state_dict()
     state["optimizer_state_dict"] = optimizer.state_dict()
     state["model_kwargs"] = {
@@ -262,7 +252,7 @@ if __name__ == "__main__":
         "epochs":epochs,
         "batch_size":batch_size,
         "device":device,
-        "seed":arguments["seed"],
+        "seed":seed,
     }
-
-    torch.save(state, file_path)
+        
+    return state

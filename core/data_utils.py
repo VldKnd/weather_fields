@@ -7,9 +7,13 @@ from torchvision.transforms import (
 )
 from torchvision.transforms import functional as TV_F
 
+from logging import getLogger
+from datetime import datetime
 import numpy as np
 import random
 import os
+
+logger = getLogger(__name__)
 
 class WeatherFieldsDataset(Dataset):
     def __init__(self, root_dir, path_to_folder, transform=None):
@@ -102,3 +106,26 @@ class WeatherFieldsDataset(Dataset):
                 hr_image = TV_F.vflip(hr_image)
 
         return lr_image, hr_image
+    
+def save_state(state, folder_path: str = "", name: str = ""):
+    now = datetime.now()
+    now = now.strftime('%m_%d_%M_%S')
+    if name != "":
+        file_name = now + ".pkl"
+    else:
+        file_name = name + now + ".pkl"
+    if folder_path == "":
+        pwd_path = os.path.abspath("..")
+        folder_path = os.path.join(
+            pwd_path,
+            "saves"
+        )
+
+    file_path = os.path.join(
+        folder_path,
+        file_name
+    )
+
+    logger.info(f"Saving the checkpoint at {file_path}. ")
+
+    torch.save(state, file_path)

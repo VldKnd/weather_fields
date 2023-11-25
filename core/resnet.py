@@ -1,6 +1,7 @@
 import torch
 from torch import nn
 
+from layers import Attention
 from functools import partial
 from einops import rearrange, reduce
 import torch.nn.functional as F
@@ -30,7 +31,6 @@ class WeightStandardizedConv2d(nn.Conv2d):
             self.dilation,
             self.groups,
         )
-
 
 class Block(nn.Module):
     def __init__(self, dim, dim_out, groups=8):
@@ -76,3 +76,18 @@ class ResnetBlock(nn.Module):
         h = self.block1(x, scale_shift=scale_shift)
         h = self.block2(h)
         return h + self.res_conv(x)
+
+class ResnetBlocWithAttention(nn.Module):
+    def __init__(self, dim, dim_out, *, noise_level_emb_dim=None, norm_groups=32, dropout=0, with_attn=False):
+        super().__init__()
+        self.with_attn = with_attn
+        self.res_block = ResnetBlock(
+            dim, dim_out, noise_level_emb_dim, norm_groups=norm_groups, dropout=dropout)
+        if with_attn:
+            self.attn = Attention(dim_out, norm_groups=norm_groups)
+
+    def forward(self, x, time_emb):
+        x = self.res_block(x, time_emb)
+        if(self.with_attn):
+            x = self.attn(x)
+        return x

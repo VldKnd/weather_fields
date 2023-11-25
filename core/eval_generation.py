@@ -50,21 +50,29 @@ def p_sample(model, x, t, t_index):
         # Algorithm 2 line 4:
         return model_mean + torch.sqrt(posterior_variance_t) * noise 
 
-# Algorithm 2 (including returning all images)
 @torch.no_grad()
-def p_sample_loop(model, shape):
+def sample_hr_images_loop(model, lr_images):
     device = next(model.parameters()).device
+    shape = lr_images.shape
+    batch_size, C, H, W = lr_images.shape
 
-    b = shape[0]
-    # start from pure noise (for each example in the batch)
     img = torch.randn(shape, device=device)
-    imgs = []
-
-    for i in tqdm(reversed(range(0, timesteps)), desc='sampling loop time step', total=timesteps):
-        img = p_sample(model, img, torch.full((b,), i, device=device, dtype=torch.long), i)
-        imgs.append(img.cpu().numpy())
-    return imgs
+    for i in reversed(range(0, timesteps)):
+        img = p_sample(
+            model,
+            img,
+            torch.full(
+                (batch_size,),
+                i,
+                device=device,
+                dtype=torch.long
+            ), i
+        )
+    return img
 
 @torch.no_grad()
-def sample(model, image_size, batch_size=16, channels=3):
-    return p_sample_loop(model, shape=(batch_size, channels, image_size, image_size))
+def get_hr_images(model, lr_images):
+    return sample_hr_images_loop(
+        model=model,
+        lr_images=lr_images,
+    )
