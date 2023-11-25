@@ -16,25 +16,33 @@ def _warmup_beta(linear_start, linear_end, n_timestep, warmup_frac):
     return betas
 
 
-def make_beta_schedule(schedule, n_timestep, linear_start=1e-4, linear_end=2e-2, cosine_s=8e-3):
-    if schedule == 'quad':
+def make_beta_schedule(
+        schedule_type, 
+        n_timestep, 
+        linear_start=1e-4, 
+        linear_end=2e-2, 
+        cosine_s=8e-3
+    ):
+    if schedule_type == 'quad':
         betas = np.linspace(linear_start ** 0.5, linear_end ** 0.5,
                             n_timestep, dtype=np.float64) ** 2
-    elif schedule == 'linear':
+    elif schedule_type == 'linear':
         betas = np.linspace(linear_start, linear_end,
                             n_timestep, dtype=np.float64)
-    elif schedule == 'warmup10':
+    elif schedule_type == 'warmup10':
         betas = _warmup_beta(linear_start, linear_end,
                              n_timestep, 0.1)
-    elif schedule == 'warmup50':
+    elif schedule_type == 'warmup50':
         betas = _warmup_beta(linear_start, linear_end,
                              n_timestep, 0.5)
-    elif schedule == 'const':
+    elif schedule_type == 'const':
         betas = linear_end * np.ones(n_timestep, dtype=np.float64)
-    elif schedule == 'jsd':  # 1/T, 1/(T-1), 1/(T-2), ..., 1
+
+    elif schedule_type == 'jsd':
         betas = 1. / np.linspace(n_timestep,
                                  1, n_timestep, dtype=np.float64)
-    elif schedule == "cosine":
+        
+    elif schedule_type == "cosine":
         timesteps = (
             torch.arange(n_timestep + 1, dtype=torch.float64) /
             n_timestep + cosine_s
@@ -44,8 +52,9 @@ def make_beta_schedule(schedule, n_timestep, linear_start=1e-4, linear_end=2e-2,
         alphas = alphas / alphas[0]
         betas = 1 - alphas[1:] / alphas[:-1]
         betas = betas.clamp(max=0.999)
+
     else:
-        raise NotImplementedError(schedule)
+        raise NotImplementedError(schedule_type)
     return betas
 
 
@@ -62,21 +71,16 @@ def default(val, d):
 class GaussianDiffusion(nn.Module):
     def __init__(
         self,
-        denoise_fn,
-        image_size,
-        channels=3,
-        loss_type='l2',
-        conditional=True,
-        schedule_opt=None
+        denoise_fn: nn.Module,
+        image_size: int,
+        channels:int = 3,
+        loss_type:str ='l2',
     ):
         super().__init__()
         self.channels = channels
         self.image_size = image_size
         self.denoise_fn = denoise_fn
         self.loss_type = loss_type
-        self.conditional = conditional
-        if schedule_opt is not None:
-            pass
 
     def set_loss(self, device):
         if self.loss_type == 'l1':
@@ -86,21 +90,32 @@ class GaussianDiffusion(nn.Module):
         else:
             raise NotImplementedError()
 
-    def set_new_noise_schedule(self, schedule_opt, device):
+    def set_new_noise_schedule(
+            self, 
+            device,
+            schedule_type, 
+            n_timestep, 
+            linear_start=1e-4, 
+            linear_end=2e-2, 
+            cosine_s=8e-3,
+        ):
         to_torch = partial(torch.tensor, dtype=torch.float32, device=device)
 
         betas = make_beta_schedule(
-            schedule=schedule_opt['schedule'],
-            n_timestep=schedule_opt['n_timestep'],
-            linear_start=schedule_opt['linear_start'],
-            linear_end=schedule_opt['linear_end'])
-        betas = betas.detach().cpu().numpy() if isinstance(
-            betas, torch.Tensor) else betas
+            schedule_type=schedule_type,
+            n_timestep=n_timestep,
+            linear_start=linear_start,
+            linear_end=linear_end,
+            cosine_s=cosine_s
+        )
+
+        betas = betas.detach().cpu().numpy() \
+            if isinstance(betas, torch.Tensor) else betas
+        
         alphas = 1. - betas
         alphas_cumprod = np.cumprod(alphas, axis=0)
         alphas_cumprod_prev = np.append(1., alphas_cumprod[:-1])
-        self.sqrt_alphas_cumprod_prev = np.sqrt(
-            np.append(1., alphas_cumprod))
+        self.sqrt_alphas_cumprod_prev = np.sqrt(np.append(1., alphas_cumprod))
 
         timesteps, = betas.shape
 
@@ -179,33 +194,19 @@ class GaussianDiffusion(nn.Module):
         device = self.betas.device
         sample_inter = (1 | (self.num_timesteps // 10))
 
-        if not self.conditional:
-            shape = x_in
-            img = torch.randn(shape, device=device)
-            ret_img = img
-            for i in tqdm(
-                reversed(range(0, self.num_timesteps)),
-                desc='sampling loop time step', 
-                total=self.num_timesteps
-            ):
-                img = self.p_sample(img, i)
+        x = x_in
+        shape = x.shape
+        img = torch.randn(shape, device=device)
+        ret_img = x
+        for i in tqdm(
+            reversed(range(0, self.num_timesteps)),
+            desc='sampling loop time step',
+            total=self.num_timesteps
+        ):
+            img = self.p_sample(img, i, condition_x=x)
 
-                if i % sample_inter == 0:
-                    ret_img = torch.cat([ret_img, img], dim=0)
-        else:
-            x = x_in
-            shape = x.shape
-            img = torch.randn(shape, device=device)
-            ret_img = x
-            for i in tqdm(
-                reversed(range(0, self.num_timesteps)),
-                desc='sampling loop time step',
-                total=self.num_timesteps
-            ):
-                img = self.p_sample(img, i, condition_x=x)
-
-                if i % sample_inter == 0:
-                    ret_img = torch.cat([ret_img, img], dim=0)
+            if i % sample_inter == 0:
+                ret_img = torch.cat([ret_img, img], dim=0)
 
         if continous:
             return ret_img
@@ -249,7 +250,7 @@ class GaussianDiffusion(nn.Module):
                 self.sqrt_alphas_cumprod_prev[t],
                 size=b
             )
-        ).to(x_start.device)
+        )
 
         continuous_sqrt_alpha_cumprod = continuous_sqrt_alpha_cumprod.view(b, -1)
 
@@ -260,16 +261,10 @@ class GaussianDiffusion(nn.Module):
             noise=noise
         )
 
-        if not self.conditional:
-            x_recon = self.denoise_fn(
-                x_noisy, 
-                continuous_sqrt_alpha_cumprod
-            )
-        else:
-            x_recon = self.denoise_fn(
-                torch.cat([x_in['SR'], x_noisy], dim=1), 
-                continuous_sqrt_alpha_cumprod
-            )
+        x_recon = self.denoise_fn(
+            torch.cat([x_in['SR'], x_noisy], dim=1), 
+            continuous_sqrt_alpha_cumprod
+        )
 
         loss = self.loss_func(noise, x_recon)
         return loss

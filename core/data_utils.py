@@ -21,7 +21,7 @@ logger = getLogger(__name__)
 class WeatherFieldsDataset(Dataset):
     def __init__(self, path_to_data, transform=None):
         """
-        Document retrieves data from folder, that is supposed to have wrf_data folder.
+        Retrieves all npy tensors from path_to_data folder as dictionary by matching there names.
         """
         date_idx_to_file_pathes = {}
 
