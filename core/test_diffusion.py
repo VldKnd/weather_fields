@@ -1,139 +1,112 @@
-import os
-import argparse
 from tqdm import tqdm
+from logging import basicConfig, INFO
 from tqdm.contrib.logging import logging_redirect_tqdm
-from typing import Tuple, Optional, Dict
-from datetime import datetime
 
 import torch
-from torch.optim import Adam
+from torch.fft import rfft2
 import torch.nn.functional as F
 from torch.utils.data import DataLoader
 
-from data_utils import WeatherFieldsDataset
-from schedule import linear_beta_schedule
 from unet import Unet
+from data_utils import WeatherFieldsDataset
+from diffusion_class import GaussianDiffusion
 
-from logging import getLogger, basicConfig, INFO
-
-logger = getLogger(__name__)
-
-timesteps = 300
-
-# define beta schedule
-betas = linear_beta_schedule(timesteps=timesteps)
-
-# define alphas 
-alphas = 1. - betas
-alphas_cumprod = torch.cumprod(alphas, axis=0)
-alphas_cumprod_prev = F.pad(alphas_cumprod[:-1], (1, 0), value=1.0)
-sqrt_recip_alphas = torch.sqrt(1.0 / alphas)
-
-# calculations for diffusion q(x_t | x_{t-1}) and others
-sqrt_alphas_cumprod = torch.sqrt(alphas_cumprod)
-sqrt_one_minus_alphas_cumprod = torch.sqrt(1. - alphas_cumprod)
-
-# calculations for posterior q(x_{t-1} | x_t, x_0)
-posterior_variance = betas * (1. - alphas_cumprod_prev) / (1. - alphas_cumprod)
-
-def extract(a: torch.Tensor, t: torch.Tensor, x_shape: Tuple):
-    batch_size = t.shape[0]
-    out = a.gather(-1, t.cpu())
-    return out.reshape(batch_size, *((1,) * (len(x_shape) - 1))).to(t.device)
-
-@torch.no_grad()
-def p_sample(model, x, self_condition, t, t_index):
-    betas_t = extract(betas, t, x.shape)
-    sqrt_one_minus_alphas_cumprod_t = extract(
-        sqrt_one_minus_alphas_cumprod, t, x.shape
-    )
-    sqrt_recip_alphas_t = extract(sqrt_recip_alphas, t, x.shape)
-    
-    model_mean = sqrt_recip_alphas_t * (
-        x - betas_t * model(
-                x=x, 
-                time=t,
-                x_self_cond=self_condition
-            ) / sqrt_one_minus_alphas_cumprod_t
-    )
-
-    if t_index == 0:
-        return model_mean
-    
-    else:
-        posterior_variance_t = extract(posterior_variance, t, x.shape)
-        noise = torch.randn_like(x)
-
-        return model_mean + torch.sqrt(posterior_variance_t) * noise 
-
-@torch.no_grad()
-def sample_hr_images_loop(model, lr_images):
-    device = next(model.parameters()).device
-    shape = lr_images.shape
-    batch_size, _, _, _ = lr_images.shape
-
-    img = torch.randn(shape, device=device)
-    for i in reversed(range(0, timesteps)):
-        img = p_sample(
-            model = model,
-            x = img,
-            self_condition = lr_images,
-            t = torch.full(
-                (batch_size,),
-                i,
-                device=device,
-                dtype=torch.long
-            ), 
-            t_index = i
-        )
-    return img
-
-@torch.no_grad()
-def get_hr_images(model, lr_images):
-    return sample_hr_images_loop(
-        model=model,
-        lr_images=lr_images,
-    )
-
-@torch.no_grad()
-def test_diffusion(model, batch_size, seed):
+def test_diffusion(diffusion_state_path, test_dataset_path, seed):
     basicConfig(level=INFO)
     torch.manual_seed(seed)
-    
-    dataset = WeatherFieldsDataset(
-        path_to_folder=os.path.join(
-            "../data",
-            "wrf_data",
-            "test",
-        )
-    )
 
-    batch_size = batch_size
     device = "cuda" if torch.cuda.is_available() else "cpu"
 
-    dataloader = DataLoader(dataset, batch_size=batch_size, shuffle=False)
-    model.to(device)
+    saved_state = torch.load(
+        diffusion_state_path
+    )
+    model = Unet()
 
-    loss_float = 0.
-    logger.info("Starting the testing. ")
+    diffusion = GaussianDiffusion(
+        denoise_fn=model,
+        image_size=128,
+        channels=3,
+        loss_type="fl2",
+    )
+
+    diffusion.set_new_noise_schedule(
+        device,
+        schedule_type='linear',
+        n_timestep=1000,
+    )
+
+    diffusion.load_state_dict(saved_state['model_state_dict'])
     
-    with logging_redirect_tqdm():
-        for _, (lr_batch, hr_batch) in tqdm(
-                enumerate(dataloader), 
-                total=len(dataloader)
-            ):
-            batch_size, _, _, _ = lr_batch.shape
-            lr_batch = lr_batch.to(device)
-            hr_batch = hr_batch.to(device)
-            
-            reconstructed_hr_batch = get_hr_images(
-                model=model, 
-                lr_images=lr_batch
-            )
-            
-            images_mean_sqrt = ((hr_batch - reconstructed_hr_batch)**2).mean(1, 2, 3)
-            loss_float += images_mean_sqrt.sum()
+    diffusion = diffusion.to(device)
+    test_dataset = WeatherFieldsDataset(
+        path_to_data=test_dataset_path
+    )
 
-    logger.info(f"Finished testing. ")
-         
-    return loss_float / len(dataset)
+    test_dataloader = DataLoader(
+        test_dataset, 
+        batch_size=128, 
+        shuffle=False,
+    )
+
+    metrics = {
+        'n':0,
+        'l2':0.,
+        'fourier_real_l2':0.,
+        'fourier_imag_l2':0.,
+        'PSD_l2':0.,
+    }
+
+    with torch.no_grad():
+        with logging_redirect_tqdm():
+            tqdm_loader = tqdm(
+                enumerate(test_dataloader), 
+                total=len(test_dataloader)
+            )
+            for _, batch in tqdm_loader:
+
+                batch['LR'] = batch['LR'].to(device)
+                batch_HR = batch['HR'].to(device)
+                batch_SR = diffusion.super_resolution(
+                    batch['LR'],
+                    continous=False
+                )
+
+                fourier_SR = rfft2(batch_SR)
+                fourier_HR = rfft2(batch_HR)
+
+                psd_SR = fourier_SR.real**2 + fourier_SR.imag**2
+                psd_HR = fourier_HR.real**2 + fourier_HR.imag**2
+
+                n = batch_HR.shape[0] 
+
+                metrics['n'] += n
+
+                metrics['l2'] += F.mse_loss(
+                    batch_SR, batch_HR, 
+                    reduction='none').mean(
+                        dim=(1, 2, 3)
+                ).sum()
+
+                metrics['fourier_real_l2'] += F.mse_loss(
+                    fourier_SR.real, fourier_HR.real, 
+                    reduction='none').mean(
+                        dim=(1, 2, 3)
+                ).sum()
+
+                metrics['fourier_imag_l2'] += F.mse_loss(
+                    fourier_SR.imag, fourier_HR.imag, 
+                    reduction='none').mean(
+                        dim=(1, 2, 3)
+                ).sum()
+
+                metrics['PSD_l2'] += F.mse_loss(
+                    psd_SR, psd_HR, 
+                    reduction='none').mean(
+                        dim=(1, 2, 3)
+                ).sum()
+
+            metrics['l2'] /= n
+            metrics['fourier_real_l2'] /= n
+            metrics['fourier_imag_l2'] /= n
+            metrics['PSD_l2'] /= n
+            return metrics

@@ -57,7 +57,10 @@ class ResnetBlock(nn.Module):
     def __init__(self, dim, dim_out, *, time_emb_dim=None, groups=8):
         super().__init__()
         self.mlp = (
-            nn.Sequential(nn.SiLU(), nn.Linear(time_emb_dim, dim_out * 2))
+            nn.Sequential(
+                nn.SiLU(), 
+                nn.Linear(time_emb_dim, dim_out * 2)
+            )
             if exists(time_emb_dim)
             else None
         )
@@ -77,17 +80,28 @@ class ResnetBlock(nn.Module):
         h = self.block2(h)
         return h + self.res_conv(x)
 
-class ResnetBlocWithAttention(nn.Module):
-    def __init__(self, dim, dim_out, *, noise_level_emb_dim=None, norm_groups=32, dropout=0, with_attn=False):
+class ResnetBlockWithAttention(nn.Module):
+    def __init__(self, dim, dim_out, *, groups=32, with_attn=False):
         super().__init__()
         self.with_attn = with_attn
         self.res_block = ResnetBlock(
-            dim, dim_out, noise_level_emb_dim, norm_groups=norm_groups, dropout=dropout)
+            dim, 
+            dim_out,
+            groups=groups,
+        )
         if with_attn:
-            self.attn = Attention(dim_out, norm_groups=norm_groups)
+            self.attn_norm = nn.GroupNorm(
+                groups,
+                dim_out
+            )
+            self.attn = Attention(
+                dim_out,
+            )
 
     def forward(self, x, time_emb):
         x = self.res_block(x, time_emb)
         if(self.with_attn):
+            x = self.attn_norm(x)
             x = self.attn(x)
+            
         return x

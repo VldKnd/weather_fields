@@ -2,8 +2,7 @@ import os
 import argparse
 from tqdm import tqdm
 from tqdm.contrib.logging import logging_redirect_tqdm
-from typing import Tuple, Optional, Dict
-from datetime import datetime
+from typing import Dict
 
 import torch
 from torch.optim import Adam
@@ -12,7 +11,6 @@ from torch.utils.data import DataLoader
 
 
 from data_utils import WeatherFieldsDataset
-from schedule import linear_beta_schedule
 from unet import Unet
 from diffusion_class import GaussianDiffusion
 from logging import getLogger, basicConfig, INFO
@@ -60,18 +58,9 @@ def parse_arguments() -> Dict:
     args = parser.parse_args()
     return vars(args)
 
-def train_diffusion(batch_size, epochs, seed):
+def train_diffusion(batch_size, epochs, seed, loss_type):
     basicConfig(level=INFO)
     torch.manual_seed(seed)
-    
-    pwd_path = os.path.abspath("..")
-    save_folder_path = os.path.join(
-        pwd_path,
-        "results"
-    )
-    
-    if not os.path.exists(save_folder_path):
-        raise OSError(f"Folder for saving information {save_folder_path} does not exits. ")
 
     dataset = WeatherFieldsDataset(
         path_to_folder=os.path.join(
@@ -106,7 +95,7 @@ def train_diffusion(batch_size, epochs, seed):
         denoise_fn=model,
         image_size=128,
         channels=3,
-        loss_type='l2',
+        loss_type=loss_type,
     )
 
     diffusion.set_new_noise_schedule(

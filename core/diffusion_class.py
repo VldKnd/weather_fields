@@ -7,7 +7,11 @@ from functools import partial
 import numpy as np
 from tqdm import tqdm
 
+import torch.nn.functional as F
+from torch.fft import rfft2
 
+DEVICE = "cuda" if torch.cuda.is_available() else "cpu"
+        
 def _warmup_beta(linear_start, linear_end, n_timestep, warmup_frac):
     betas = linear_end * np.ones(n_timestep, dtype=np.float64)
     warmup_time = int(n_timestep * warmup_frac)
@@ -67,6 +71,12 @@ def default(val, d):
         return val
     return d() if isfunction(d) else d
 
+def complex_mse_loss(  
+        input,
+        target,
+    ):
+    difference = input - target
+    return ((difference.real**2 + difference.imag**2) / 2).mean()
 
 class GaussianDiffusion(nn.Module):
     def __init__(
@@ -77,18 +87,11 @@ class GaussianDiffusion(nn.Module):
         loss_type:str ='l2',
     ):
         super().__init__()
+
+        self.loss_type = loss_type
         self.channels = channels
         self.image_size = image_size
         self.denoise_fn = denoise_fn
-        self.loss_type = loss_type
-
-    def set_loss(self, device):
-        if self.loss_type == 'l1':
-            self.loss_func = nn.L1Loss(reduction='sum').to(device)
-        elif self.loss_type == 'l2':
-            self.loss_func = nn.MSELoss(reduction='sum').to(device)
-        else:
-            raise NotImplementedError()
 
     def set_new_noise_schedule(
             self, 
@@ -167,51 +170,61 @@ class GaussianDiffusion(nn.Module):
     def p_mean_variance(self, x, t, clip_denoised: bool, condition_x=None):
         batch_size = x.shape[0]
         noise_level = torch.FloatTensor(
-            [self.sqrt_alphas_cumprod_prev[t+1]]).repeat(batch_size, 1).to(x.device)
+            [self.sqrt_alphas_cumprod_prev[t+1]]
+        ).repeat(batch_size, 1).to(x.device)
+        
         if condition_x is not None:
+            predicted_noise = self.denoise_fn(
+                torch.cat([condition_x, x], dim=1),
+                noise_level
+            )
+            print('predicted_noise: ', predicted_noise.shape)
+            
             x_recon = self.predict_start_from_noise(
-                x, t=t, noise=self.denoise_fn(torch.cat([condition_x, x], dim=1), noise_level))
+                x, t=t, noise=predicted_noise
+            )
+            print('x_recon: ', x_recon.shape)
+            
         else:
             x_recon = self.predict_start_from_noise(
-                x, t=t, noise=self.denoise_fn(x, noise_level))
+                x, t=t, noise=self.denoise_fn(x, noise_level)
+            )
 
         if clip_denoised:
             x_recon.clamp_(-1., 1.)
 
         model_mean, posterior_log_variance = self.q_posterior(
-            x_start=x_recon, x_t=x, t=t)
+            x_start=x_recon, x_t=x, t=t
+        )
+        
         return model_mean, posterior_log_variance
 
     @torch.no_grad()
     def p_sample(self, x, t, clip_denoised=True, condition_x=None):
         model_mean, model_log_variance = self.p_mean_variance(
-            x=x, t=t, clip_denoised=clip_denoised, condition_x=condition_x)
+            x=x, 
+            t=t, 
+            clip_denoised=clip_denoised, 
+            condition_x=condition_x
+        )
         noise = torch.randn_like(x) if t > 0 else torch.zeros_like(x)
+        print('model_mean: ', model_mean.shape)
         return model_mean + noise * (0.5 * model_log_variance).exp()
 
     @torch.no_grad()
-    def p_sample_loop(self, x_in, continous=False):
+    def p_sample_loop(self, x_in):
         device = self.betas.device
         sample_inter = (1 | (self.num_timesteps // 10))
 
         x = x_in
         shape = x.shape
         img = torch.randn(shape, device=device)
-        ret_img = x
-        for i in tqdm(
-            reversed(range(0, self.num_timesteps)),
-            desc='sampling loop time step',
-            total=self.num_timesteps
-        ):
+        for i in reversed(range(0, self.num_timesteps)):
             img = self.p_sample(img, i, condition_x=x)
+            print('img: ', img.shape)
 
-            if i % sample_inter == 0:
-                ret_img = torch.cat([ret_img, img], dim=0)
-
-        if continous:
-            return ret_img
-        else:
-            return ret_img[-1]
+            break
+        return img
 
     @torch.no_grad()
     def sample(self, batch_size=1, continous=False):
@@ -228,11 +241,11 @@ class GaussianDiffusion(nn.Module):
         )
 
     @torch.no_grad()
-    def super_resolution(self, x_in, continous=False):
-        return self.p_sample_loop(x_in, continous)
+    def super_resolution(self, x_in):
+        return self.p_sample_loop(x_in)
 
     def q_sample(self, x_start, continuous_sqrt_alpha_cumprod, noise=None):
-        noise = default(noise, lambda: torch.randn_like(x_start))
+        noise = default(noise, lambda: torch.randn_like(x_start, device=DEVICE))
 
         return (
             continuous_sqrt_alpha_cumprod * x_start +
@@ -241,32 +254,94 @@ class GaussianDiffusion(nn.Module):
 
     def p_losses(self, x_in, noise=None):
         x_start = x_in['HR']
-        b, _, _, _ = x_start.shape
+        B, C, H, W = x_start.shape
         t = np.random.randint(1, self.num_timesteps + 1)
 
         continuous_sqrt_alpha_cumprod = torch.FloatTensor(
             np.random.uniform(
                 self.sqrt_alphas_cumprod_prev[t-1],
                 self.sqrt_alphas_cumprod_prev[t],
-                size=b
+                size=B
             )
         )
 
-        continuous_sqrt_alpha_cumprod = continuous_sqrt_alpha_cumprod.view(b, -1)
+        continuous_sqrt_alpha_cumprod = continuous_sqrt_alpha_cumprod.view(B, -1)
 
-        noise = default(noise, lambda: torch.randn_like(x_start))
+        noise = default(noise, lambda: torch.randn_like(x_start, device=DEVICE))
+        continuous_sqrt_alpha_cumprod = continuous_sqrt_alpha_cumprod.to(DEVICE)
+
         x_noisy = self.q_sample(
             x_start=x_start, 
             continuous_sqrt_alpha_cumprod=continuous_sqrt_alpha_cumprod.view(-1, 1, 1, 1), 
             noise=noise
         )
 
-        x_recon = self.denoise_fn(
-            torch.cat([x_in['SR'], x_noisy], dim=1), 
+        predicted_noise = self.denoise_fn(
+            torch.cat([x_in['LR'], x_noisy], dim=1), 
             continuous_sqrt_alpha_cumprod
         )
 
-        loss = self.loss_func(noise, x_recon)
+        if self.loss_type == 'l1':
+            loss = F.l1_loss(
+                noise, 
+                x_recon
+            )
+
+        elif self.loss_type == 'l2':
+            loss = F.mse_loss(
+                noise, 
+                x_recon
+            )
+
+        elif self.loss_type == 'fl2':
+            with torch.no_grad():
+                fourier_noise = ( 2**(1/2) / H ) * rfft2(noise)
+
+            loss = complex_mse_loss(
+                fourier_noise, 
+                ( 2**(1/2) / H ) * rfft2(x_recon)
+            )
+
+        elif self.loss_type == 'fl2_l2':
+            with torch.no_grad():
+                fourier_noise = ( 2**(1/2) / H ) * rfft2(noise)
+
+            loss = F.mse_loss(
+                noise, 
+                x_recon
+            ) + complex_mse_loss(
+                fourier_noise, 
+                ( 2**(1/2) / H ) * rfft2(x_recon)
+            )
+
+        elif self.loss_type == 'sl1_l2':
+            x_start_predicted = self.predict_start_from_noise(
+                x_noisy, t=t, noise=predicted_noise
+            )
+            model_mean_predicted, posterior_log_variance_predicted = self.q_posterior(
+                x_start=x_start_predicted, x_t=x_noisy, t=t
+            )
+            x_recon_prev = model_mean_predicted +\
+                torch.randn_like(x_noisy) * (0.5 * posterior_log_variance_predicted).exp()
+        
+            model_mean, posterior_log_variance = self.q_posterior(
+                x_start=x_in['HR'], x_t=x_noisy, t=t
+            )
+            x_prev = model_mean +\
+                torch.randn_like(x_noisy) * (0.5 * posterior_log_variance).exp()
+
+            loss = F.mse_loss(
+                noise, 
+                predicted_noise
+            ) + self.sqrt_alphas_cumprod_prev[t-1].view(-1, 1, 1, 1)*\
+            self.torch.abs(
+                torch.pow(x_prev.real, 2) + 
+                torch.pow(x_prev.imag, 2) - 
+                torch.pow(x_recon_prev.real, 2) + 
+                torch.pow(x_recon_prev.imag, 2)
+            )
+
+
         return loss
 
     def forward(self, x, *args, **kwargs):

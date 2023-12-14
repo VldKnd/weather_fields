@@ -1,9 +1,8 @@
 import torch
 from torch import nn
 from utils import default, exists
-from functools import partial
 from resnet import (
-    ResnetBlocWithAttention,
+    ResnetBlockWithAttention,
     Block
 )
 from nn_utils import (
@@ -19,18 +18,16 @@ class Unet(nn.Module):
         in_channel=6,
         out_channel=3,
         inner_channel=32,
-        norm_groups=32,
+        groups=8,
         channel_mults=(1, 2, 4,),
-        attn_res=(8),
+        attn_res=(32,),
         res_blocks=3,
-        dropout=0,
         with_noise_level_emb=True,
         image_size=128
     ):
         super().__init__()
 
         if with_noise_level_emb:
-            noise_level_channel = inner_channel
             self.noise_level_mlp = nn.Sequential(
                 PositionalEncoding(inner_channel),
                 nn.Linear(inner_channel, inner_channel * 4),
@@ -38,7 +35,6 @@ class Unet(nn.Module):
                 nn.Linear(inner_channel * 4, inner_channel)
             )
         else:
-            noise_level_channel = None
             self.noise_level_mlp = None
 
         num_mults = len(channel_mults)
@@ -57,18 +53,16 @@ class Unet(nn.Module):
 
             for _ in range(0, res_blocks):
                 downs.append(
-                    ResnetBlocWithAttention(
+                    ResnetBlockWithAttention(
                         pre_channel, 
-                        channel_mult, 
-                        noise_level_emb_dim=noise_level_channel, 
-                        norm_groups=norm_groups, 
-                        dropout=dropout, 
+                        channel_mult,  
+                        groups = groups, 
                         with_attn=use_attn
                     )
                 )
                 feat_channels.append(channel_mult)
                 pre_channel = channel_mult
-                
+
             if not is_last:
                 downs.append(Downsample(pre_channel))
                 feat_channels.append(pre_channel)
@@ -77,20 +71,16 @@ class Unet(nn.Module):
         self.downs = nn.ModuleList(downs)
 
         self.mid = nn.ModuleList([
-            ResnetBlocWithAttention(
+            ResnetBlockWithAttention(
                 pre_channel, 
-                pre_channel, 
-                noise_level_emb_dim = noise_level_channel, 
-                norm_groups = norm_groups,
-                dropout = dropout, 
+                pre_channel,  
+                groups = groups,
                 with_attn = True
             ),
-            ResnetBlocWithAttention(
+            ResnetBlockWithAttention(
                 pre_channel, 
                 pre_channel, 
-                noise_level_emb_dim = noise_level_channel, 
-                norm_groups = norm_groups,
-                dropout = dropout, 
+                groups = groups,
                 with_attn = False
             )
         ])
@@ -106,12 +96,10 @@ class Unet(nn.Module):
             for _ in range(0, res_blocks+1):
 
                 ups.append(
-                    ResnetBlocWithAttention(
+                    ResnetBlockWithAttention(
                         pre_channel+feat_channels.pop(), 
                         channel_mult, 
-                        noise_level_emb_dim = noise_level_channel, 
-                        norm_groups = norm_groups,
-                        dropout = dropout, 
+                        groups = groups,
                         with_attn = use_attn
                     )
                 )
@@ -122,13 +110,14 @@ class Unet(nn.Module):
 
         self.ups = nn.ModuleList(ups)
 
-        self.final_conv = Block(
-            pre_channel,
+        self.final_conv = nn.Conv2d(
+            pre_channel, 
             default(
                 out_channel, 
                 in_channel
-            ), 
-            groups=norm_groups
+            ),
+            kernel_size=3,
+            padding=1
         )
 
     def forward(self, x, time):
@@ -137,20 +126,20 @@ class Unet(nn.Module):
 
         feats = []
         for layer in self.downs:
-            if isinstance(layer, ResnetBlocWithAttention):
+            if isinstance(layer, ResnetBlockWithAttention):
                 x = layer(x, t)
             else:
                 x = layer(x)
             feats.append(x)
 
         for layer in self.mid:
-            if isinstance(layer, ResnetBlocWithAttention):
+            if isinstance(layer, ResnetBlockWithAttention):
                 x = layer(x, t)
             else:
                 x = layer(x)
 
         for layer in self.ups:
-            if isinstance(layer, ResnetBlocWithAttention):
+            if isinstance(layer, ResnetBlockWithAttention):
                 x = layer(torch.cat((x, feats.pop()), dim=1), t)
             else:
                 x = layer(x)
