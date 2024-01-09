@@ -1,0 +1,15 @@
+  0%|          | 0/100 [00:00<?, ?it/s]/var/folders/6p/qpbmrrz54jn868p0fxnknvtw0000gn/T/ipykernel_84387/2160220716.py:71: UserWarning: Using a target size (torch.Size([2, 2, 32, 32])) that is different to the input size (torch.Size([2, 1, 32, 32])). This will likely lead to incorrect results due to broadcasting. Please ensure they have the same size.
+  return torch.nn.functional.mse_loss(eps, eps_model)
+  1%|          | 1/100 [00:02<04:18,  2.61s/it]/var/folders/6p/qpbmrrz54jn868p0fxnknvtw0000gn/T/ipykernel_84387/2160220716.py:71: UserWarning: Using a target size (torch.Size([2, 2, 32, 32])) that is different to the input size (torch.Size([2, 1, 32, 32])). This will likely lead to incorrect results due to broadcasting. Please ensure they have the same size.
+  return torch.nn.functional.mse_loss(eps, eps_model)
+
+
+
+
+
+
+
+
+
+
+100%|██████████| 100/100 [00:22<00:00,  4.37it/s]

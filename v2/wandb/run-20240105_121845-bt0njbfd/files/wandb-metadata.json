@@ -1,0 +1,36 @@
+{
+    "os": "macOS-14.1-arm64-arm-64bit",
+    "python": "3.11.6",
+    "heartbeatAt": "2024-01-05T11:18:51.884840",
+    "startedAt": "2024-01-05T11:18:45.236203",
+    "docker": null,
+    "cuda": null,
+    "args": [],
+    "state": "running",
+    "program": "<python with no main file>",
+    "codePathLocal": null,
+    "git": {
+        "remote": "git@github.com:VldKnd/weather_fields.git",
+        "commit": "fe12f229c5f6fc9b51754e6789b059b15078aa74"
+    },
+    "email": "kondratyev.w.i@gmail.com",
+    "root": "/Users/vladimir/Desktop/Shad/Project/weather_fields",
+    "host": "Vladimirs-MacBook-Pro.local",
+    "username": "vladimir",
+    "executable": "/Users/vladimir/mambaforge/envs/shad-project/bin/python",
+    "cpu_count": 8,
+    "cpu_count_logical": 8,
+    "disk": {
+        "/": {
+            "total": 228.27386474609375,
+            "used": 190.90595245361328
+        }
+    },
+    "gpuapple": {
+        "type": "arm",
+        "vendor": "Apple"
+    },
+    "memory": {
+        "total": 8.0
+    }
+}

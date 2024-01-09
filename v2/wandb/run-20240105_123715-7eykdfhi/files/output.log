@@ -1,0 +1,12 @@
+
+  0%|          | 0/100 [00:00<?, ?it/s]
+Python 3.11.6
+torch.__version__: 2.1.0
+<>:4: SyntaxWarning: assertion is always true, perhaps remove parentheses?
+<>:8: SyntaxWarning: assertion is always true, perhaps remove parentheses?
+<>:4: SyntaxWarning: assertion is always true, perhaps remove parentheses?
+<>:8: SyntaxWarning: assertion is always true, perhaps remove parentheses?
+/var/folders/6p/qpbmrrz54jn868p0fxnknvtw0000gn/T/ipykernel_84387/2487645649.py:4: SyntaxWarning: assertion is always true, perhaps remove parentheses?
+  assert(
+/var/folders/6p/qpbmrrz54jn868p0fxnknvtw0000gn/T/ipykernel_84387/2487645649.py:8: SyntaxWarning: assertion is always true, perhaps remove parentheses?
+  assert(
